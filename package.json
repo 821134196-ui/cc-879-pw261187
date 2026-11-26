@@ -1,0 +1,19 @@
+{
+  "name": "local-reverse-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local reverse proxy with pointwise delivery: retry semantics split by delivery stage, a shared retry budget, and a live debug trace page.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/main.js",
+    "demo": "node src/main.js --demo",
+    "test": "node --test test/*.test.js",
+    "test:ui": "node scripts/ui-smoke.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.0"
+  }
+}

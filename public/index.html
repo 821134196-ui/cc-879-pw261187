@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reverse proxy — pointwise delivery console</title>
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <h1>Pointwise delivery console</h1>
+    <span class="sub">Retry semantics split by delivery stage · shared retry budget · live trace</span>
+    <span class="spacer"></span>
+    <span class="chip"><span class="live-dot" id="liveDot"></span><span id="liveText">connecting…</span></span>
+    <span class="chip" id="modeChip">—</span>
+  </header>
+
+  <div class="controls">
+    <span class="label">Send through proxy:</span>
+    <select id="scenario" aria-label="Scenario">
+      <option value="GET /ok">GET /ok — healthy</option>
+      <option value="GET /flaky?fail=1">GET /flaky?fail=1 — first attempt fails</option>
+      <option value="GET /weak?status=503">GET /weak?status=503 — retryable status</option>
+      <option value="GET /slow-first-hop?ms=5000">GET /slow-first-hop — first-hop timeout</option>
+      <option value="GET /hit-and-drop-before">GET /hit-and-drop-before — dies before body</option>
+      <option value="GET /hit-and-drop?after=6">GET /hit-and-drop?after=6 — dies mid-body</option>
+      <option value="GET /big?bytes=2000000">GET /big?bytes=2M — large, backpressure</option>
+      <option value="GET /stream">GET /stream — chunked</option>
+      <option value="POST /echo">POST /echo — unsafe, not replayed</option>
+      <option value="POST /echo?key=1">POST /echo + Idempotency-Key</option>
+    </select>
+    <button id="sendBtn" type="button">Send once</button>
+    <button id="burstBtn" type="button">Concurrent ×8 (weak)</button>
+    <button id="clearBtn" type="button">Clear</button>
+    <button id="budgetResetBtn" type="button">Reset budget</button>
+  </div>
+
+  <section class="kpis" aria-label="Live summary">
+    <div class="kpi">
+      <div class="label">Requests traced</div>
+      <div class="value" id="kpiTotal">—</div>
+      <div class="note" id="kpiTotalNote">&nbsp;</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Delivered</div>
+      <div class="value" id="kpiDelivered">—</div>
+      <div class="note" id="kpiDeliveredNote">&nbsp;</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Retried</div>
+      <div class="value" id="kpiRetried">—</div>
+      <div class="note" id="kpiRetriedNote">&nbsp;</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Gave up</div>
+      <div class="value" id="kpiGaveUp">—</div>
+      <div class="note" id="kpiGaveUpNote">&nbsp;</div>
+    </div>
+    <div class="kpi">
+      <div class="label">p95 delivery</div>
+      <div class="value" id="kpiP95">—</div>
+      <div class="note">end-to-end, delivered only</div>
+    </div>
+  </section>
+
+  <div class="grid">
+
+    <section class="card" aria-labelledby="budgetTitle">
+      <h2 id="budgetTitle">Shared retry budget</h2>
+      <p class="hint">One token bucket for every request. A retry costs a token; when it's empty, failures are relayed rather than retried — so concurrent weak failures cannot multiply.</p>
+      <div class="meter-head">
+        <span>Tokens available</span>
+        <span id="budgetRatio" style="font-variant-numeric: tabular-nums">—</span>
+      </div>
+      <div class="meter" role="meter" aria-labelledby="budgetTitle" aria-valuemin="0" aria-valuemax="12" aria-valuenow="0" id="budgetMeter">
+        <div class="fill" id="budgetFill" style="width: 0%"></div>
+      </div>
+      <div class="meter-foot">
+        <span id="budgetRefill">—</span>
+        <span id="budgetCounts">—</span>
+      </div>
+
+      <div class="ups" id="upstreams" aria-label="Upstreams"></div>
+
+      <div class="chart-top" style="margin-top:18px">
+        <div>
+          <h3 style="font-size:12px;margin:0;letter-spacing:.02em;text-transform:uppercase;color:var(--muted)">Budget over the last minute</h3>
+        </div>
+        <div class="legend">
+          <span class="key"><span class="sw" style="background:var(--stage-2)"></span>tokens</span>
+          <span class="key"><span class="sw dot" style="background:var(--good)"></span>granted</span>
+          <span class="key"><span class="sw dot" style="background:var(--warning)"></span>denied</span>
+        </div>
+      </div>
+      <div class="budget-chart" id="budgetChart">
+        <svg id="budgetSvg" viewBox="0 0 600 140" role="img" aria-label="Retry budget tokens over the last minute">
+        </svg>
+        <div class="table-wrap" id="budgetTableWrap" hidden>
+          <table>
+            <thead><tr><th scope="col">Time</th><th scope="col" class="num">Tokens</th><th scope="col" class="num">Granted</th><th scope="col" class="num">Denied</th></tr></thead>
+            <tbody id="budgetTableBody"></tbody>
+          </table>
+        </div>
+        <button class="toggle-table" id="budgetTableToggle" type="button" aria-expanded="false">Show table</button>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="outcomeTitle">
+      <h2 id="outcomeTitle">Outcomes by delivery stage</h2>
+      <p class="hint">Where each attempt ended. A failure in <em>pre-headers</em> is invisible to the client and replayable; once headers are committed or a body byte is sent, we finish or truncate.</p>
+      <div class="legend" style="margin-bottom:10px">
+        <span class="key"><span class="sw" style="background:var(--stage-1)"></span>pre-headers</span>
+        <span class="key"><span class="sw" style="background:var(--stage-2)"></span>headers committed</span>
+        <span class="key"><span class="sw" style="background:var(--stage-3)"></span>body partial</span>
+      </div>
+      <svg id="stageSvg" viewBox="0 0 600 180" role="img" aria-label="Attempts bucketed by outcome and terminal delivery stage"></svg>
+      <div class="table-wrap" id="stageTableWrap" hidden>
+        <table>
+          <thead><tr><th scope="col">Outcome</th><th scope="col" class="num">pre-headers</th><th scope="col" class="num">headers committed</th><th scope="col" class="num">body partial</th></tr></thead>
+          <tbody id="stageTableBody"></tbody>
+        </table>
+      </div>
+      <button class="toggle-table" id="stageTableToggle" type="button" aria-expanded="false">Show table</button>
+    </section>
+
+  </div>
+
+  <section class="traces" aria-labelledby="tracesTitle">
+    <div class="traces-head">
+      <h2 id="tracesTitle">Live traces</h2>
+      <span class="hint">Each row is one real forward: which upstreams were tried, how it ended. Click for the full decision log.</span>
+    </div>
+    <div class="trace-list" id="traceList">
+      <div class="empty" id="traceEmpty">No traffic yet. Send a request above — or curl the proxy directly.</div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span>Stage-aware retry · shared token bucket · per-upstream concurrency caps</span>
+    <span id="footConfig"></span>
+  </footer>
+</div>
+
+<div class="tooltip" id="tooltip" role="tooltip"></div>
+<script type="module" src="/assets/app.js"></script>
+</body>
+</html>
